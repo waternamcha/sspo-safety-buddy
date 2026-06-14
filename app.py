@@ -196,6 +196,8 @@ def callback():
 def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
+    if event.source.type == 'group':
+        print(f"GROUP ID: {event.source.group_id}")
 
     # เริ่ม report
     if text.lower() in ["report", "alert", "แจ้ง", "🚨"] or "alert" in text.lower():
