@@ -15,76 +15,146 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import (
     MessageEvent, TextMessageContent, ImageMessageContent
 )
+import gspread
+from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 
 CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET")
 GROUP_ID = os.environ.get("GROUP_ID")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
-
 user_state = {}
 
-# ========== DATABASE ==========
-DB_FILE = "data.json"
+LOCATIONS = [
+    "ห้องนักกาย", "ห้องแต่งปูนคลินิค", "ห้องเครื่องจักรคลินิค",
+    "ห้องขึ้นรูปขาเทียมโรงเรียน", "ห้องขึ้นรูปขาเทียมคลินิค", "ห้องช่างรวม",
+    "ห้องเครื่องจักรโรงเรียน", "ห้องเครื่องจักรCEPO", "ห้องแต่งปูนCEPO"
+]
 
-def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"stars": {}, "reports": [], "users": {}}
+# ========== GOOGLE SHEETS ==========
+def get_sheet():
+    creds_dict = json.loads(GOOGLE_CREDENTIALS)
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open_by_key(SPREADSHEET_ID)
 
-def save_db(db):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, indent=2)
+def get_users():
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Users")
+        rows = ws.get_all_records()
+        return {r["user_id"]: r["name"] for r in rows if r.get("user_id")}
+    except:
+        return {}
 
-def register_user(user_id):
-    """บันทึก user เข้า DB เมื่อเริ่มใช้งาน"""
-    name = get_user_profile(user_id)
-    db = load_db()
-    db["users"][user_id] = name
-    save_db(db)
-    return name
-
-def get_registered_users():
-    """ดึงรายชื่อคนที่เคยใช้บอทแล้ว"""
-    db = load_db()
-    users = []
-    for uid, name in db.get("users", {}).items():
-        users.append({"id": uid, "name": name})
-    return users
+def save_user(user_id, name):
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Users")
+        users = get_users()
+        if user_id not in users:
+            ws.append_row([user_id, name, datetime.now().strftime("%d/%m/%Y %H:%M")])
+        else:
+            # อัปเดตชื่อถ้าเปลี่ยน
+            cell = ws.find(user_id)
+            if cell:
+                ws.update_cell(cell.row, 2, name)
+    except Exception as e:
+        print(f"save_user error: {e}")
 
 def add_star(giver_id, giver_name, receiver_id, receiver_name):
-    db = load_db()
-    if receiver_id not in db["stars"]:
-        db["stars"][receiver_id] = {"name": receiver_name, "count": 0, "history": []}
-    db["stars"][receiver_id]["count"] += 1
-    db["stars"][receiver_id]["name"] = receiver_name
-    db["stars"][receiver_id]["history"].append({
-        "from": giver_name,
-        "time": datetime.now().strftime("%d/%m/%Y %H:%M")
-    })
-    db["users"][giver_id] = giver_name
-    db["users"][receiver_id] = receiver_name
-    save_db(db)
-    return db["stars"][receiver_id]["count"]
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Stars")
+        ws.append_row([
+            giver_id, giver_name, receiver_id, receiver_name,
+            datetime.now().strftime("%d/%m/%Y %H:%M")
+        ])
+        # นับดาวของ receiver
+        all_rows = ws.get_all_records()
+        count = sum(1 for r in all_rows if r.get("receiver_id") == receiver_id)
+        return count
+    except Exception as e:
+        print(f"add_star error: {e}")
+        return 0
 
-def add_report(report_type, reporter_name):
-    db = load_db()
-    db["reports"].append({
-        "type": report_type,
-        "reporter": reporter_name,
-        "time": datetime.now().strftime("%d/%m/%Y %H:%M")
-    })
-    save_db(db)
+def add_report(report_type, location, reporter_name):
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Reports")
+        ws.append_row([
+            datetime.now().strftime("%d/%m/%Y %H:%M"),
+            report_type, location, reporter_name
+        ])
+    except Exception as e:
+        print(f"add_report error: {e}")
 
 def get_leaderboard():
-    db = load_db()
-    stars = db["stars"]
-    sorted_stars = sorted(stars.items(), key=lambda x: x[1]["count"], reverse=True)
-    return sorted_stars[:10]
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Stars")
+        rows = ws.get_all_records()
+        counts = {}
+        for r in rows:
+            rid = r.get("receiver_id", "")
+            rname = r.get("receiver_name", "")
+            if rid:
+                counts[rid] = {"name": rname, "count": counts.get(rid, {}).get("count", 0) + 1}
+        return sorted(counts.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
+    except Exception as e:
+        print(f"get_leaderboard error: {e}")
+        return []
+
+def get_recent_reports(n=20):
+    try:
+        sh = get_sheet()
+        ws = sh.worksheet("Reports")
+        rows = ws.get_all_records()
+        return list(reversed(rows[-n:]))
+    except:
+        return []
+
+def get_stats():
+    try:
+        sh = get_sheet()
+        r_count = len(sh.worksheet("Reports").get_all_records())
+        s_rows = sh.worksheet("Stars").get_all_records()
+        s_count = len(s_rows)
+        u_count = len(sh.worksheet("Users").get_all_records())
+        return r_count, s_count, u_count
+    except:
+        return 0, 0, 0
+
+def init_sheets():
+    """สร้าง header ถ้ายังไม่มี"""
+    try:
+        sh = get_sheet()
+        try:
+            ws = sh.worksheet("Users")
+            if not ws.row_values(1):
+                ws.append_row(["user_id", "name", "joined"])
+        except:
+            pass
+        try:
+            ws = sh.worksheet("Stars")
+            if not ws.row_values(1):
+                ws.append_row(["giver_id", "giver_name", "receiver_id", "receiver_name", "time"])
+        except:
+            pass
+        try:
+            ws = sh.worksheet("Reports")
+            if not ws.row_values(1):
+                ws.append_row(["time", "type", "location", "reporter"])
+        except:
+            pass
+    except Exception as e:
+        print(f"init_sheets error: {e}")
 
 # ========== LINE API ==========
 def get_messaging_api():
@@ -98,7 +168,7 @@ def get_user_profile(user_id):
     except:
         return "ไม่ทราบชื่อ"
 
-# ========== SEND MESSAGES ==========
+# ========== MESSAGES ==========
 def send_main_menu(reply_token):
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
@@ -106,71 +176,60 @@ def send_main_menu(reply_token):
         messages=[TextMessage(
             text="🦺 SSPO Safety Buddy\n\nเลือกสิ่งที่ต้องการ:",
             quick_reply=QuickReply(items=[
-                QuickReplyItem(action=MessageAction(label="🚨 รายงาน", text="report")),
-                QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="⭐ ให้ดาว")),
+                QuickReplyItem(action=MessageAction(label="🚨 รายงาน PPE", text="report")),
+                QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="ให้ดาว")),
                 QuickReplyItem(action=MessageAction(label="📊 Dashboard", text="dashboard")),
             ])
         )]
     ))
 
-def send_quick_reply(reply_token):
+def send_location_menu(reply_token):
+    items = [QuickReplyItem(action=MessageAction(label=loc[:20], text="📍 " + loc)) for loc in LOCATIONS]
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
-            text="🚨 เลือกประเภทที่ต้องการรายงาน:",
-            quick_reply=QuickReply(items=[
-                QuickReplyItem(action=MessageAction(label="🦺 ไม่ใส่ PPE", text="🦺 ไม่ใส่ PPE")),
-                QuickReplyItem(action=MessageAction(label="⚠️ จุดเสี่ยง", text="⚠️ จุดเสี่ยง")),
-                QuickReplyItem(action=MessageAction(label="🔥 เหตุฉุกเฉิน", text="🔥 เหตุฉุกเฉิน")),
-            ])
+            text="📍 เลือกบริเวณที่พบ:",
+            quick_reply=QuickReply(items=items)
         )]
     ))
 
 def send_star_menu(reply_token, giver_id):
-    """แสดงรายชื่อคนที่เคยใช้บอท ให้เลือกให้ดาว"""
-    users = get_registered_users()
-    # กรองตัวเองออก
-    users = [u for u in users if u["id"] != giver_id]
-
-    if not users:
+    users = get_users()
+    items = []
+    for uid, name in users.items():
+        if uid != giver_id:
+            items.append(QuickReplyItem(
+                action=MessageAction(
+                    label=name[:20],
+                    text="⭐ ให้ดาว:" + uid + ":" + name
+                )
+            ))
+    if not items:
         api = get_messaging_api()
         api.reply_message(ReplyMessageRequest(
             reply_token=reply_token,
-            messages=[TextMessage(
-                text="ยังไม่มีสมาชิกในระบบครับ\n\nให้เพื่อนๆ แชทกับบอทก่อนสักครั้ง แล้วจะขึ้นชื่อให้เลือกได้ครับ 🙏"
-            )]
+            messages=[TextMessage(text="ยังไม่มีสมาชิกในระบบครับ\nให้เพื่อนๆ แชทกับบอทก่อนสักครั้งครับ 🙏")]
         ))
         return
-
-    items = []
-    for u in users[:13]:  # LINE จำกัด 13 ปุ่ม
-        items.append(QuickReplyItem(
-            action=MessageAction(
-                label=u["name"][:20],
-                text=f"⭐ ให้ดาว:{u['id']}:{u['name']}"
-            )
-        ))
-
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
             text="⭐ เลือกคนที่อยากให้ดาว\n(ใส่ PPE ครบ / ทำงานปลอดภัย):",
-            quick_reply=QuickReply(items=items)
+            quick_reply=QuickReply(items=items[:13])
         )]
     ))
 
 def send_dashboard_to_group():
-    """ส่ง dashboard สรุปเข้ากลุ่ม"""
-    db = load_db()
     leaderboard = get_leaderboard()
+    total_reports, total_stars, total_users = get_stats()
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
 
     medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     lb_rows = []
     for i, (uid, data) in enumerate(leaderboard[:5]):
-        icon = medal[i] if i < len(medal) else f"{i+1}."
+        icon = medal[i] if i < len(medal) else str(i+1) + "."
         lb_rows.append({
             "type": "box", "layout": "horizontal",
             "contents": [
@@ -178,9 +237,6 @@ def send_dashboard_to_group():
                 {"type": "text", "text": "⭐ " + str(data["count"]), "size": "sm", "flex": 2, "align": "end", "color": "#FF8C00", "weight": "bold"}
             ]
         })
-
-    total_reports = len(db["reports"])
-    total_stars = sum(v["count"] for v in db["stars"].values())
 
     body_contents = [
         {
@@ -202,6 +258,15 @@ def send_dashboard_to_group():
                         {"type": "text", "text": "⭐", "align": "center", "size": "xl"},
                         {"type": "text", "text": str(total_stars), "align": "center", "size": "xxl", "weight": "bold", "color": "#FF8C00"},
                         {"type": "text", "text": "ดาวรวม", "align": "center", "size": "xs", "color": "#888888"}
+                    ]
+                },
+                {
+                    "type": "box", "layout": "vertical", "flex": 1,
+                    "backgroundColor": "#E8F5E9", "cornerRadius": "8px", "paddingAll": "10px",
+                    "contents": [
+                        {"type": "text", "text": "👷", "align": "center", "size": "xl"},
+                        {"type": "text", "text": str(total_users), "align": "center", "size": "xxl", "weight": "bold", "color": "#00897B"},
+                        {"type": "text", "text": "ผู้ใช้", "align": "center", "size": "xs", "color": "#888888"}
                     ]
                 }
             ]
@@ -235,42 +300,32 @@ def send_dashboard_to_group():
     api = get_messaging_api()
     api.push_message(PushMessageRequest(
         to=GROUP_ID,
-        messages=[FlexMessage(
-            alt_text="📊 Safety Dashboard",
-            contents=FlexContainer.from_dict(flex_content)
-        )]
+        messages=[FlexMessage(alt_text="📊 Safety Dashboard", contents=FlexContainer.from_dict(flex_content))]
     ))
 
 def get_image_content(message_id):
-    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
-    headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
-    response = requests.get(url, headers=headers)
-    return response.content
+    url = "https://api-data.line.me/v2/bot/message/" + message_id + "/content"
+    headers = {"Authorization": "Bearer " + CHANNEL_ACCESS_TOKEN}
+    return requests.get(url, headers=headers).content
 
 def upload_to_imgur(image_content):
     try:
         headers = {"Authorization": "Client-ID 546c25a59c58ad7"}
         b64 = base64.b64encode(image_content).decode("utf-8")
-        response = requests.post(
-            "https://api.imgur.com/3/image",
-            headers=headers,
-            json={"image": b64, "type": "base64"}
-        )
-        if response.status_code == 200:
-            return response.json()["data"]["link"]
+        r = requests.post("https://api.imgur.com/3/image", headers=headers, json={"image": b64, "type": "base64"})
+        if r.status_code == 200:
+            return r.json()["data"]["link"]
     except:
         pass
     return None
 
-def send_alert_to_group(message_id, report_type, reporter_name):
+def send_alert_to_group(message_id, location, reporter_name):
     now = datetime.now().strftime("%d/%m/%Y %H:%M น.")
+    add_report("🦺 ไม่ใส่ PPE", location, reporter_name)
     image_content = get_image_content(message_id)
     public_image_url = upload_to_imgur(image_content)
-    add_report(report_type, reporter_name)
 
     api = get_messaging_api()
-    messages = []
-
     if public_image_url:
         flex_content = {
             "type": "bubble", "size": "mega",
@@ -283,19 +338,19 @@ def send_alert_to_group(message_id, report_type, reporter_name):
             "body": {
                 "type": "box", "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": "พบ " + report_type, "weight": "bold", "size": "lg", "color": "#FF0000", "wrap": True},
+                    {"type": "text", "text": "พบ 🦺 ไม่ใส่ PPE", "weight": "bold", "size": "lg", "color": "#FF0000", "wrap": True},
                     {"type": "text", "text": "กรุณาแก้ไขด่วน!", "size": "md", "color": "#333333", "margin": "sm"},
                     {"type": "separator", "margin": "md"},
                     {
                         "type": "box", "layout": "vertical", "margin": "md", "spacing": "sm",
                         "contents": [
                             {"type": "box", "layout": "horizontal", "contents": [
-                                {"type": "text", "text": "🕐 เวลา", "size": "sm", "color": "#888888", "flex": 3},
-                                {"type": "text", "text": now, "size": "sm", "color": "#333333", "flex": 5}
+                                {"type": "text", "text": "📍 บริเวณ", "size": "sm", "color": "#888888", "flex": 3},
+                                {"type": "text", "text": location, "size": "sm", "color": "#333333", "flex": 5, "wrap": True}
                             ]},
                             {"type": "box", "layout": "horizontal", "contents": [
-                                {"type": "text", "text": "📋 ประเภท", "size": "sm", "color": "#888888", "flex": 3},
-                                {"type": "text", "text": report_type, "size": "sm", "color": "#FF0000", "flex": 5, "weight": "bold"}
+                                {"type": "text", "text": "🕐 เวลา", "size": "sm", "color": "#888888", "flex": 3},
+                                {"type": "text", "text": now, "size": "sm", "color": "#333333", "flex": 5}
                             ]}
                         ]
                     }
@@ -306,14 +361,15 @@ def send_alert_to_group(message_id, report_type, reporter_name):
                 "contents": [{"type": "text", "text": "SSPO Safety Buddy System", "size": "xs", "color": "#888888", "align": "center"}]
             }
         }
-        messages.append(FlexMessage(
-            alt_text="⚠️ Safety Alert! พบ " + report_type + " กรุณาแก้ไขด่วน!",
-            contents=FlexContainer.from_dict(flex_content)
+        api.push_message(PushMessageRequest(
+            to=GROUP_ID,
+            messages=[FlexMessage(alt_text="⚠️ พบไม่ใส่ PPE บริเวณ " + location, contents=FlexContainer.from_dict(flex_content))]
         ))
     else:
-        messages.append(TextMessage(text="⚠️ SAFETY ALERT\nพบ " + report_type + "\nกรุณาแก้ไขด่วน!\n🕐 " + now))
-
-    api.push_message(PushMessageRequest(to=GROUP_ID, messages=messages))
+        api.push_message(PushMessageRequest(
+            to=GROUP_ID,
+            messages=[TextMessage(text="⚠️ SAFETY ALERT\nพบไม่ใส่ PPE\n📍 " + location + "\n🕐 " + now)]
+        ))
 
 # ========== DASHBOARD WEB ==========
 DASHBOARD_HTML = """
@@ -324,25 +380,30 @@ DASHBOARD_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SSPO Safety Dashboard</title>
 <style>
-  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; margin: 0; padding: 20px; }
-  h1 { color: #00897B; text-align: center; }
-  .cards { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; margin: 20px 0; }
-  .card { background: white; border-radius: 12px; padding: 24px; text-align: center; min-width: 140px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-  .card .num { font-size: 48px; font-weight: bold; }
-  .card .label { color: #888; font-size: 14px; }
-  table { width: 100%; max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-collapse: collapse; }
-  th { background: #00897B; color: white; padding: 12px 16px; text-align: left; }
-  td { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
-  h2 { text-align: center; color: #333; margin-top: 32px; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; margin: 0; padding: 16px; }
+  h1 { color: #00897B; text-align: center; font-size: 22px; margin-bottom: 16px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 20px; }
+  .card { background: white; border-radius: 12px; padding: 16px 20px; text-align: center; min-width: 100px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .card .num { font-size: 36px; font-weight: bold; }
+  .card .label { color: #888; font-size: 12px; margin-top: 4px; }
+  table { width: 100%; max-width: 640px; margin: 0 auto 24px; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-collapse: collapse; }
+  th { background: #00897B; color: white; padding: 10px 14px; text-align: left; font-size: 14px; }
+  td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  h2 { text-align: center; color: #333; margin: 20px 0 10px; font-size: 16px; }
+  .empty { text-align: center; color: #aaa; padding: 20px; }
+  footer { text-align: center; color: #bbb; font-size: 11px; margin-top: 24px; }
 </style>
 </head>
 <body>
 <h1>🦺 SSPO Safety Dashboard</h1>
 <div class="cards">
-  <div class="card"><div class="num" style="color:#FF0000">{{ total_reports }}</div><div class="label">🚨 รายงานทั้งหมด</div></div>
-  <div class="card"><div class="num" style="color:#FF8C00">{{ total_stars }}</div><div class="label">⭐ ดาวทั้งหมด</div></div>
-  <div class="card"><div class="num" style="color:#00897B">{{ total_users }}</div><div class="label">👷 ผู้ใช้งาน</div></div>
+  <div class="card"><div class="num" style="color:#FF0000">{{ total_reports }}</div><div class="label">🚨 รายงาน</div></div>
+  <div class="card"><div class="num" style="color:#FF8C00">{{ total_stars }}</div><div class="label">⭐ ดาวรวม</div></div>
+  <div class="card"><div class="num" style="color:#00897B">{{ total_users }}</div><div class="label">👷 ผู้ใช้</div></div>
 </div>
+
 <h2>🏆 อันดับดาว</h2>
 <table>
   <tr><th>อันดับ</th><th>ชื่อ</th><th>ดาว</th></tr>
@@ -353,41 +414,39 @@ DASHBOARD_HTML = """
     <td style="color:#FF8C00;font-weight:bold">⭐ {{ data.count }}</td>
   </tr>
   {% endfor %}
-  {% if not leaderboard %}<tr><td colspan="3" style="text-align:center;color:#888">ยังไม่มีข้อมูล</td></tr>{% endif %}
+  {% if not leaderboard %}<tr><td colspan="3" class="empty">ยังไม่มีข้อมูล</td></tr>{% endif %}
 </table>
+
 <h2>📋 รายงานล่าสุด</h2>
-<table style="margin-top:20px">
-  <tr><th>เวลา</th><th>ประเภท</th></tr>
+<table>
+  <tr><th>เวลา</th><th>บริเวณ</th></tr>
   {% for r in reports %}
   <tr>
-    <td style="color:#888;font-size:13px">{{ r.time }}</td>
-    <td style="color:#FF0000">{{ r.type }}</td>
+    <td style="color:#888">{{ r.time }}</td>
+    <td style="color:#FF0000">{{ r.location }}</td>
   </tr>
   {% endfor %}
-  {% if not reports %}<tr><td colspan="2" style="text-align:center;color:#888">ยังไม่มีข้อมูล</td></tr>{% endif %}
+  {% if not reports %}<tr><td colspan="2" class="empty">ยังไม่มีข้อมูล</td></tr>{% endif %}
 </table>
-<p style="text-align:center;color:#aaa;margin-top:32px;font-size:12px">อัปเดต {{ now }}</p>
+<footer>SSPO Safety Buddy • อัปเดต {{ now }}</footer>
 </body>
 </html>
 """
 
 @app.route("/dashboard")
 def dashboard():
-    db = load_db()
     leaderboard = [(i, uid, data) for i, (uid, data) in enumerate(get_leaderboard())]
-    reports = list(reversed(db["reports"][-20:]))
-    total_reports = len(db["reports"])
-    total_stars = sum(v["count"] for v in db["stars"].values())
-    total_users = len(db["users"])
+    reports = get_recent_reports(20)
+    total_reports, total_stars, total_users = get_stats()
     now = datetime.now().strftime("%d/%m/%Y %H:%M น.")
     return render_template_string(DASHBOARD_HTML,
         leaderboard=leaderboard, reports=reports,
         total_reports=total_reports, total_stars=total_stars,
         total_users=total_users, now=now)
 
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
-    return {"status": "ok", "service": "SSPO Safety Buddy"}, 200
+    return {"status": "ok"}, 200
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -402,17 +461,15 @@ def callback():
 # ========== HANDLERS ==========
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
-    # ไม่ตอบในกลุ่ม ยกเว้น /dashboard
-    if event.source.type == 'group':
+    if event.source.type == "group":
         if event.message.text.strip().lower() == "/dashboard":
             send_dashboard_to_group()
         return
 
     user_id = event.source.user_id
     text = event.message.text.strip()
-
-    # บันทึก user ทุกครั้งที่คุย
-    register_user(user_id)
+    name = get_user_profile(user_id)
+    save_user(user_id, name)
 
     # ให้ดาว
     if text.startswith("⭐ ให้ดาว:"):
@@ -420,8 +477,7 @@ def handle_text(event):
         if len(parts) >= 3:
             receiver_id = parts[1]
             receiver_name = parts[2]
-            giver_name = get_user_profile(user_id)
-            total = add_star(user_id, giver_name, receiver_id, receiver_name)
+            total = add_star(user_id, name, receiver_id, receiver_name)
             api = get_messaging_api()
             api.reply_message(ReplyMessageRequest(
                 reply_token=event.reply_token,
@@ -429,34 +485,37 @@ def handle_text(event):
             ))
             api.push_message(PushMessageRequest(
                 to=GROUP_ID,
-                messages=[TextMessage(text="⭐ " + giver_name + " ให้ดาวแก่ " + receiver_name + " เพราะใส่ PPE ครบ!\n" + receiver_name + " มีดาวทั้งหมด " + str(total) + " ดาว 🎉")]
+                messages=[TextMessage(text="⭐ " + name + " ให้ดาวแก่ " + receiver_name + "\nเพราะใส่ PPE ครบ! " + receiver_name + " มี " + str(total) + " ดาว 🎉")]
             ))
         return
 
-    if text.lower() in ["report", "alert", "แจ้ง", "🚨"] or "alert" in text.lower():
-        user_state.pop(user_id, None)
-        send_quick_reply(event.reply_token)
+    # เลือกบริเวณ
+    if text.startswith("📍 "):
+        location = text[3:]
+        if user_id in user_state and user_state[user_id].get("waiting") == "location":
+            user_state[user_id] = {"waiting": "image", "location": location}
+            api = get_messaging_api()
+            api.reply_message(ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text="📸 กรุณาส่งรูปภาพเหตุการณ์ที่บริเวณ " + location)]
+            ))
         return
 
-    if text in ["⭐ ให้ดาว", "ให้ดาว", "star"]:
+    if text.lower() in ["report", "แจ้ง", "🚨"]:
+        user_state[user_id] = {"waiting": "location"}
+        send_location_menu(event.reply_token)
+        return
+
+    if text in ["ให้ดาว", "⭐ ให้ดาว", "star", "rewards"]:
         send_star_menu(event.reply_token, user_id)
         return
 
     if text.lower() in ["dashboard", "/dashboard", "สรุป"]:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://sspo-safety-buddy.onrender.com")
+        url = os.environ.get("RENDER_EXTERNAL_URL", "https://sspo-safety-buddy.onrender.com")
         api = get_messaging_api()
         api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
-            messages=[TextMessage(text="📊 ดู Dashboard ได้ที่:\n" + render_url + "/dashboard")]
-        ))
-        return
-
-    if text in ["🦺 ไม่ใส่ PPE", "⚠️ จุดเสี่ยง", "🔥 เหตุฉุกเฉิน"]:
-        user_state[user_id] = {"report_type": text}
-        api = get_messaging_api()
-        api.reply_message(ReplyMessageRequest(
-            reply_token=event.reply_token,
-            messages=[TextMessage(text="📸 กรุณาส่งรูปภาพเหตุการณ์")]
+            messages=[TextMessage(text="📊 ดู Dashboard ได้ที่:\n" + url + "/dashboard")]
         ))
         return
 
@@ -465,11 +524,13 @@ def handle_text(event):
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event):
-    if event.source.type == 'group':
+    if event.source.type == "group":
         return
 
     user_id = event.source.user_id
-    if user_id not in user_state:
+    name = get_user_profile(user_id)
+
+    if user_id not in user_state or user_state[user_id].get("waiting") != "image":
         api = get_messaging_api()
         api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
@@ -477,17 +538,23 @@ def handle_image(event):
         ))
         return
 
-    report_type = user_state[user_id].get("report_type", "ไม่ระบุ")
-    reporter_name = get_user_profile(user_id)
-    send_alert_to_group(event.message.id, report_type, reporter_name)
+    location = user_state[user_id].get("location", "ไม่ระบุ")
+    send_alert_to_group(event.message.id, location, name)
 
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=event.reply_token,
-        messages=[TextMessage(text="✅ รายงานสำเร็จ!\nประเภท: " + report_type + "\nทีม Safety ได้รับแจ้งแล้วครับ 🙏")]
+        messages=[TextMessage(text="✅ รายงานสำเร็จ!\n📍 บริเวณ: " + location + "\nทีม Safety ได้รับแจ้งแล้วครับ 🙏")]
     ))
     user_state.pop(user_id, None)
 
+
+# Init sheets on startup
+with app.app_context():
+    try:
+        init_sheets()
+    except Exception as e:
+        print(f"init error: {e}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
