@@ -156,7 +156,7 @@ def send_main_menu(reply_token):
     get_messaging_api().reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
-            text="🦺 SSPO Safety Buddy\n\nเลือกสิ่งที่ต้องการ:",
+            text="🦺 SSPO Safety Buddy 🦺\n\กรุณาเลือกสิ่งที่ต้องการ:",
             quick_reply=QuickReply(items=[
                 QuickReplyItem(action=MessageAction(label="🚨 รายงาน PPE", text="report")),
                 QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="ให้ดาว")),
@@ -199,7 +199,7 @@ def send_alert_to_group(message_id, location, reporter_name):
                 "type": "box", "layout": "vertical",
                 "backgroundColor": "#C62828", "paddingAll": "16px",
                 "contents": [
-                    {"type": "text", "text": "⚠️ SAFETY ALERT", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+                    {"type": "text", "text": "⚠️ SAFETY ALERT ⚠️", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
                     {"type": "text", "text": "พบการไม่ใส่ PPE", "size": "sm", "color": "#FFCDD2"}
                 ]
             },
@@ -229,7 +229,7 @@ def send_alert_to_group(message_id, location, reporter_name):
         ]))
     else:
         api.push_message(PushMessageRequest(to=GROUP_ID, messages=[
-            TextMessage(text=f"⚠️ SAFETY ALERT\nพบไม่ใส่ PPE\n📍 {location}\n🕐 {now}")
+            TextMessage(text=f"⚠️ SAFETY ALERT ⚠️\nพบไม่ใส่ PPE\n📍 {location}\n🕐 {now}")
         ]))
 
 def send_dashboard_to_group():
