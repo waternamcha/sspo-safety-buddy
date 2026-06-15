@@ -31,9 +31,9 @@ handler = WebhookHandler(CHANNEL_SECRET)
 user_state = {}
 
 LOCATIONS = [
-    "ห้องนักกาย", "ห้องแต่งปูน", "ห้องเครื่องจักร",
-    "คลินิก", "ห้องขึ้นรูปขาเทียม", "ห้องช่างรวม",
-    "ห้องเครื่องจักร รร", "ห้องเครื่องจักร CEPO", "ห้องแต่งปูน CEPO"
+    "ห้องนักกาย", "ห้องแต่งปูนคลินิก", "ห้องเครื่องจักรคลินิก",
+    "ห้องขึ้นรูปขาเทียมโรงเรียน", "ห้องขึ้นรูปขาเทียมคลินิก", "ห้องช่างรวม",
+    "ห้องเครื่องจักรโรงเรียน", "ห้องเครื่องจักรCEPO", "ห้องแต่งปูนCEPO", "บริเวณอื่นๆ"
 ]
 
 def now_bkk():
@@ -156,7 +156,7 @@ def send_main_menu(reply_token):
     get_messaging_api().reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
-            text="🦺 SSPO Safety Buddy 🦺\n\กรุณาเลือกสิ่งที่ต้องการ:",
+            text="🦺 SSPO Safety Buddy 🦺\nกรุณาเลือกสิ่งที่ต้องการ:",
             quick_reply=QuickReply(items=[
                 QuickReplyItem(action=MessageAction(label="🚨 รายงาน PPE", text="report")),
                 QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="ให้ดาว")),
