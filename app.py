@@ -40,6 +40,22 @@ def save_db(db):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, ensure_ascii=False, indent=2)
 
+def register_user(user_id):
+    """บันทึก user เข้า DB เมื่อเริ่มใช้งาน"""
+    name = get_user_profile(user_id)
+    db = load_db()
+    db["users"][user_id] = name
+    save_db(db)
+    return name
+
+def get_registered_users():
+    """ดึงรายชื่อคนที่เคยใช้บอทแล้ว"""
+    db = load_db()
+    users = []
+    for uid, name in db.get("users", {}).items():
+        users.append({"id": uid, "name": name})
+    return users
+
 def add_star(giver_id, giver_name, receiver_id, receiver_name):
     db = load_db()
     if receiver_id not in db["stars"]:
@@ -82,26 +98,27 @@ def get_user_profile(user_id):
     except:
         return "ไม่ทราบชื่อ"
 
-def get_group_members():
-    try:
-        url = f"https://api.line.me/v2/bot/group/{GROUP_ID}/members/ids"
-        headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        members = []
-        for uid in data.get("memberIds", []):
-            name = get_user_profile(uid)
-            members.append({"id": uid, "name": name})
-        return members
-    except:
-        return []
+# ========== SEND MESSAGES ==========
+def send_main_menu(reply_token):
+    api = get_messaging_api()
+    api.reply_message(ReplyMessageRequest(
+        reply_token=reply_token,
+        messages=[TextMessage(
+            text="🦺 SSPO Safety Buddy\n\nเลือกสิ่งที่ต้องการ:",
+            quick_reply=QuickReply(items=[
+                QuickReplyItem(action=MessageAction(label="🚨 รายงาน", text="report")),
+                QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="⭐ ให้ดาว")),
+                QuickReplyItem(action=MessageAction(label="📊 Dashboard", text="dashboard")),
+            ])
+        )]
+    ))
 
 def send_quick_reply(reply_token):
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
-            text="เลือกประเภทที่ต้องการรายงาน:",
+            text="🚨 เลือกประเภทที่ต้องการรายงาน:",
             quick_reply=QuickReply(items=[
                 QuickReplyItem(action=MessageAction(label="🦺 ไม่ใส่ PPE", text="🦺 ไม่ใส่ PPE")),
                 QuickReplyItem(action=MessageAction(label="⚠️ จุดเสี่ยง", text="⚠️ จุดเสี่ยง")),
@@ -111,51 +128,59 @@ def send_quick_reply(reply_token):
     ))
 
 def send_star_menu(reply_token, giver_id):
-    members = get_group_members()
-    items = []
-    for m in members:
-        if m["id"] != giver_id:
-            items.append(QuickReplyItem(
-                action=MessageAction(
-                    label=m["name"][:20],
-                    text="STAR:" + m["id"] + ":" + m["name"]
-                )
-            ))
-    if not items:
+    """แสดงรายชื่อคนที่เคยใช้บอท ให้เลือกให้ดาว"""
+    users = get_registered_users()
+    # กรองตัวเองออก
+    users = [u for u in users if u["id"] != giver_id]
+
+    if not users:
         api = get_messaging_api()
         api.reply_message(ReplyMessageRequest(
             reply_token=reply_token,
-            messages=[TextMessage(text="ไม่พบสมาชิกในกลุ่มครับ")]
+            messages=[TextMessage(
+                text="ยังไม่มีสมาชิกในระบบครับ\n\nให้เพื่อนๆ แชทกับบอทก่อนสักครั้ง แล้วจะขึ้นชื่อให้เลือกได้ครับ 🙏"
+            )]
         ))
         return
+
+    items = []
+    for u in users[:13]:  # LINE จำกัด 13 ปุ่ม
+        items.append(QuickReplyItem(
+            action=MessageAction(
+                label=u["name"][:20],
+                text=f"⭐ ให้ดาว:{u['id']}:{u['name']}"
+            )
+        ))
+
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=reply_token,
         messages=[TextMessage(
-            text="เลือกคนที่อยากให้ดาว (ใส่ PPE ครบ):",
-            quick_reply=QuickReply(items=items[:13])
+            text="⭐ เลือกคนที่อยากให้ดาว\n(ใส่ PPE ครบ / ทำงานปลอดภัย):",
+            quick_reply=QuickReply(items=items)
         )]
     ))
 
 def send_dashboard_to_group():
+    """ส่ง dashboard สรุปเข้ากลุ่ม"""
     db = load_db()
     leaderboard = get_leaderboard()
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    medal = ["🥇", "🥈", "🥉", "4.", "5."]
-    total_reports = len(db["reports"])
-    total_stars = sum(v["count"] for v in db["stars"].values())
 
+    medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     lb_rows = []
     for i, (uid, data) in enumerate(leaderboard[:5]):
-        icon = medal[i] if i < len(medal) else str(i+1) + "."
+        icon = medal[i] if i < len(medal) else f"{i+1}."
         lb_rows.append({
-            "type": "box",
-            "layout": "horizontal",
+            "type": "box", "layout": "horizontal",
             "contents": [
                 {"type": "text", "text": icon + " " + data["name"], "size": "sm", "flex": 4, "wrap": True},
                 {"type": "text", "text": "⭐ " + str(data["count"]), "size": "sm", "flex": 2, "align": "end", "color": "#FF8C00", "weight": "bold"}
             ]
         })
+
+    total_reports = len(db["reports"])
+    total_stars = sum(v["count"] for v in db["stars"].values())
 
     body_contents = [
         {
@@ -181,14 +206,14 @@ def send_dashboard_to_group():
                 }
             ]
         },
-        {"type": "separator"},
-        {"type": "text", "text": "🏆 Top ดาวสูงสุด", "weight": "bold", "size": "md"}
+        {"type": "separator"}
     ]
 
     if lb_rows:
+        body_contents.append({"type": "text", "text": "🏆 Top ดาวสูงสุด", "weight": "bold", "size": "md"})
         body_contents.extend(lb_rows)
     else:
-        body_contents.append({"type": "text", "text": "ยังไม่มีข้อมูล", "color": "#888888", "size": "sm"})
+        body_contents.append({"type": "text", "text": "ยังไม่มีข้อมูลดาว", "color": "#888888", "size": "sm"})
 
     flex_content = {
         "type": "bubble", "size": "mega",
@@ -244,6 +269,7 @@ def send_alert_to_group(message_id, report_type, reporter_name):
     add_report(report_type, reporter_name)
 
     api = get_messaging_api()
+    messages = []
 
     if public_image_url:
         flex_content = {
@@ -280,18 +306,14 @@ def send_alert_to_group(message_id, report_type, reporter_name):
                 "contents": [{"type": "text", "text": "SSPO Safety Buddy System", "size": "xs", "color": "#888888", "align": "center"}]
             }
         }
-        api.push_message(PushMessageRequest(
-            to=GROUP_ID,
-            messages=[FlexMessage(
-                alt_text="⚠️ Safety Alert! พบ " + report_type,
-                contents=FlexContainer.from_dict(flex_content)
-            )]
+        messages.append(FlexMessage(
+            alt_text="⚠️ Safety Alert! พบ " + report_type + " กรุณาแก้ไขด่วน!",
+            contents=FlexContainer.from_dict(flex_content)
         ))
     else:
-        api.push_message(PushMessageRequest(
-            to=GROUP_ID,
-            messages=[TextMessage(text="⚠️ SAFETY ALERT\nพบ " + report_type + "\nกรุณาแก้ไขด่วน!\n🕐 " + now)]
-        ))
+        messages.append(TextMessage(text="⚠️ SAFETY ALERT\nพบ " + report_type + "\nกรุณาแก้ไขด่วน!\n🕐 " + now))
+
+    api.push_message(PushMessageRequest(to=GROUP_ID, messages=messages))
 
 # ========== DASHBOARD WEB ==========
 DASHBOARD_HTML = """
@@ -302,13 +324,13 @@ DASHBOARD_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SSPO Safety Dashboard</title>
 <style>
-  body { font-family: sans-serif; background: #f0f4f8; margin: 0; padding: 20px; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; margin: 0; padding: 20px; }
   h1 { color: #00897B; text-align: center; }
   .cards { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; margin: 20px 0; }
   .card { background: white; border-radius: 12px; padding: 24px; text-align: center; min-width: 140px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-  .num { font-size: 48px; font-weight: bold; }
-  .label { color: #888; font-size: 14px; }
-  table { width: 100%; max-width: 600px; margin: 0 auto 24px; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-collapse: collapse; }
+  .card .num { font-size: 48px; font-weight: bold; }
+  .card .label { color: #888; font-size: 14px; }
+  table { width: 100%; max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-collapse: collapse; }
   th { background: #00897B; color: white; padding: 12px 16px; text-align: left; }
   td { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; }
   h2 { text-align: center; color: #333; margin-top: 32px; }
@@ -317,11 +339,10 @@ DASHBOARD_HTML = """
 <body>
 <h1>🦺 SSPO Safety Dashboard</h1>
 <div class="cards">
-  <div class="card"><div class="num" style="color:#FF0000">{{ total_reports }}</div><div class="label">🚨 รายงาน</div></div>
-  <div class="card"><div class="num" style="color:#FF8C00">{{ total_stars }}</div><div class="label">⭐ ดาวรวม</div></div>
-  <div class="card"><div class="num" style="color:#00897B">{{ total_users }}</div><div class="label">👷 ผู้ใช้</div></div>
+  <div class="card"><div class="num" style="color:#FF0000">{{ total_reports }}</div><div class="label">🚨 รายงานทั้งหมด</div></div>
+  <div class="card"><div class="num" style="color:#FF8C00">{{ total_stars }}</div><div class="label">⭐ ดาวทั้งหมด</div></div>
+  <div class="card"><div class="num" style="color:#00897B">{{ total_users }}</div><div class="label">👷 ผู้ใช้งาน</div></div>
 </div>
-
 <h2>🏆 อันดับดาว</h2>
 <table>
   <tr><th>อันดับ</th><th>ชื่อ</th><th>ดาว</th></tr>
@@ -334,9 +355,8 @@ DASHBOARD_HTML = """
   {% endfor %}
   {% if not leaderboard %}<tr><td colspan="3" style="text-align:center;color:#888">ยังไม่มีข้อมูล</td></tr>{% endif %}
 </table>
-
 <h2>📋 รายงานล่าสุด</h2>
-<table>
+<table style="margin-top:20px">
   <tr><th>เวลา</th><th>ประเภท</th></tr>
   {% for r in reports %}
   <tr>
@@ -346,7 +366,7 @@ DASHBOARD_HTML = """
   {% endfor %}
   {% if not reports %}<tr><td colspan="2" style="text-align:center;color:#888">ยังไม่มีข้อมูล</td></tr>{% endif %}
 </table>
-<p style="text-align:center;color:#aaa;font-size:12px">อัปเดต {{ now }}</p>
+<p style="text-align:center;color:#aaa;margin-top:32px;font-size:12px">อัปเดต {{ now }}</p>
 </body>
 </html>
 """
@@ -356,18 +376,18 @@ def dashboard():
     db = load_db()
     leaderboard = [(i, uid, data) for i, (uid, data) in enumerate(get_leaderboard())]
     reports = list(reversed(db["reports"][-20:]))
+    total_reports = len(db["reports"])
+    total_stars = sum(v["count"] for v in db["stars"].values())
+    total_users = len(db["users"])
+    now = datetime.now().strftime("%d/%m/%Y %H:%M น.")
     return render_template_string(DASHBOARD_HTML,
-        leaderboard=leaderboard,
-        reports=reports,
-        total_reports=len(db["reports"]),
-        total_stars=sum(v["count"] for v in db["stars"].values()),
-        total_users=len(db["users"]),
-        now=datetime.now().strftime("%d/%m/%Y %H:%M น.")
-    )
+        leaderboard=leaderboard, reports=reports,
+        total_reports=total_reports, total_stars=total_stars,
+        total_users=total_users, now=now)
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok"}, 200
+    return {"status": "ok", "service": "SSPO Safety Buddy"}, 200
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -382,16 +402,20 @@ def callback():
 # ========== HANDLERS ==========
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
-    if event.source.type == "group":
+    # ไม่ตอบในกลุ่ม ยกเว้น /dashboard
+    if event.source.type == 'group':
         if event.message.text.strip().lower() == "/dashboard":
             send_dashboard_to_group()
-        return  # ไม่ตอบในกลุ่ม
+        return
 
     user_id = event.source.user_id
     text = event.message.text.strip()
 
+    # บันทึก user ทุกครั้งที่คุย
+    register_user(user_id)
+
     # ให้ดาว
-    if text.startswith("STAR:"):
+    if text.startswith("⭐ ให้ดาว:"):
         parts = text.split(":")
         if len(parts) >= 3:
             receiver_id = parts[1]
@@ -401,15 +425,15 @@ def handle_text(event):
             api = get_messaging_api()
             api.reply_message(ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text="✅ ให้ดาว " + receiver_name + " สำเร็จ!\nรวมทั้งหมด ⭐ " + str(total) + " ดาว")]
+                messages=[TextMessage(text="✅ ให้ดาว " + receiver_name + " สำเร็จ!\n" + receiver_name + " มีดาวทั้งหมด ⭐ " + str(total) + " ดาว")]
             ))
             api.push_message(PushMessageRequest(
                 to=GROUP_ID,
-                messages=[TextMessage(text="⭐ " + giver_name + " ให้ดาวแก่ " + receiver_name + " เพราะใส่ PPE ครบ!\nรวม " + str(total) + " ดาว 🎉")]
+                messages=[TextMessage(text="⭐ " + giver_name + " ให้ดาวแก่ " + receiver_name + " เพราะใส่ PPE ครบ!\n" + receiver_name + " มีดาวทั้งหมด " + str(total) + " ดาว 🎉")]
             ))
         return
 
-    if text.lower() in ["report", "alert", "แจ้ง"]:
+    if text.lower() in ["report", "alert", "แจ้ง", "🚨"] or "alert" in text.lower():
         user_state.pop(user_id, None)
         send_quick_reply(event.reply_token)
         return
@@ -419,11 +443,11 @@ def handle_text(event):
         return
 
     if text.lower() in ["dashboard", "/dashboard", "สรุป"]:
-        url = "https://sspo-safety-buddy.onrender.com/dashboard"
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://sspo-safety-buddy.onrender.com")
         api = get_messaging_api()
         api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
-            messages=[TextMessage(text="📊 ดู Dashboard ได้ที่:\n" + url)]
+            messages=[TextMessage(text="📊 ดู Dashboard ได้ที่:\n" + render_url + "/dashboard")]
         ))
         return
 
@@ -436,24 +460,14 @@ def handle_text(event):
         ))
         return
 
-    api = get_messaging_api()
-    api.reply_message(ReplyMessageRequest(
-        reply_token=event.reply_token,
-        messages=[TextMessage(
-            text="🦺 SSPO Safety Buddy\n\nเลือกสิ่งที่ต้องการ:",
-            quick_reply=QuickReply(items=[
-                QuickReplyItem(action=MessageAction(label="🚨 รายงาน", text="report")),
-                QuickReplyItem(action=MessageAction(label="⭐ ให้ดาว", text="⭐ ให้ดาว")),
-                QuickReplyItem(action=MessageAction(label="📊 Dashboard", text="dashboard")),
-            ])
-        )]
-    ))
+    send_main_menu(event.reply_token)
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event):
-    if event.source.type == "group":
+    if event.source.type == 'group':
         return
+
     user_id = event.source.user_id
     if user_id not in user_state:
         api = get_messaging_api()
@@ -462,9 +476,11 @@ def handle_image(event):
             messages=[TextMessage(text="กรุณาพิมพ์ 'report' ก่อนส่งรูปครับ 🙏")]
         ))
         return
+
     report_type = user_state[user_id].get("report_type", "ไม่ระบุ")
     reporter_name = get_user_profile(user_id)
     send_alert_to_group(event.message.id, report_type, reporter_name)
+
     api = get_messaging_api()
     api.reply_message(ReplyMessageRequest(
         reply_token=event.reply_token,
